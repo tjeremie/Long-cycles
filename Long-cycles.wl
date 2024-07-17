@@ -284,7 +284,10 @@ k33=<|"leftVertices"->{a1,a2,a3},"rightVertices"->{b1,b2,b3},"edges"->{{a1,b1},{
 toGraph[k33]
 
 
-{{timek33,pathFindingResultsk33}}=pathFindingComputation/@isomorphismClasses[k33]
+isomorphismClasses[k33]
+
+
+{timek33,pathFindingResultsk33}=pathFindingComputation[k33]
 
 
 linearProgramCheckAll[pathFindingResultsk33]
@@ -300,13 +303,13 @@ hypercubePlusEdge=<|"leftVertices"->{a1,a2,a3,a4},"rightVertices"->{b1,b2,b3,b4}
 {hypercubePlusEdge1,hypercubePlusEdge2}=isomorphismClasses[hypercubePlusEdge]
 
 
-{{timehypercubePlusEdge1,pathFindingResultshypercubePlusEdge1}}=pathFindingComputation/@isomorphismClasses[hypercubePlusEdge1]
+{timehypercubePlusEdge1,pathFindingResultshypercubePlusEdge1}=pathFindingComputation[hypercubePlusEdge1]
 
 
 linearProgramCheckAll[pathFindingResultshypercubePlusEdge1]
 
 
-{{timehypercubePlusEdge2,pathFindingResultshypercubePlusEdge2}}=pathFindingComputation/@isomorphismClasses[hypercubePlusEdge2]
+{timehypercubePlusEdge2,pathFindingResultshypercubePlusEdge2}=pathFindingComputation[hypercubePlusEdge2]
 
 
 linearProgramCheckAll[pathFindingResultshypercubePlusEdge2]
