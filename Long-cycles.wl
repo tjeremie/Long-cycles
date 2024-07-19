@@ -128,7 +128,7 @@ containsNonIntervalLeft[g_, path_] := IntersectingQ[pathToEdges[path], g["leftNo
 containsNonIntervalRight[g_, path_] := IntersectingQ[pathToEdges[path], g["rightNonIntervals"]]
 
 
-findPathsLeft[g_] :=
+findPathsLeft[g_] := (*Lists all potentially useful left paths*)
 	Select[
 		FindPath[
 			EdgeDelete[g["graph"], g["rightNonIntervalEdges"]], 
@@ -142,7 +142,7 @@ findPathsLeft[g_] :=
      ]
 
 
-rightPathExists[g_, leftPath_] :=
+rightPathExists[g_, leftPath_] := (*For given left path, tries to find a compatible right path*)
 	AnyTrue[
 		FindPath[
 			EdgeDelete[
@@ -157,13 +157,15 @@ rightPathExists[g_, leftPath_] :=
 			{1, Infinity}, 
 			All
         ], 
-        coversAllEdges[g,{leftPath, #1}] && 
+        coversAllEdges[g,{leftPath, #1}] && (*Check to see if the cycles are entirely covered*)
         ContainsAll[pathToEdges[#1], g["rightNonIntervalEdges"]] && 
-        IntersectingQ[pathToEdges[#1], g["crossEdges"]]&
+        IntersectingQ[pathToEdges[#1], g["crossEdges"]]& (*Check to ensure that at least one cross edge is covered*)
     ]
 
 
-pathsExist[g_] := AnyTrue[findPathsLeft[g], rightPathExists[g, #1]&]
+pathsExist[g_] := AnyTrue[findPathsLeft[g], rightPathExists[g, #1]&] 
+(*Looks for pairs of a left path and a right path that cover all the edges of the cycles, returns true if successful, false otherwise
+Note that this is sufficient as there is an edge between the first and last vertex on the right, completing the path to a cycle (Something like this should be said, I'm not very happy with the current phrasing)*)
 
 
 (* ::Section:: *)
