@@ -191,13 +191,13 @@ possibleNewEdgesJoined[h_, newEdge_, layout_] :=
 			,{j, 1, Length[layout["rightVerticesGrouped"][[posRight]]] + 1}
 			]
 		, 1]
-	]
+	](*Given a new edge to be added and a current layout, checks each possible way of adding the new edge while respecting the current order on h*)
 
 
 iterate[h_, edgeInH_, currentLayouts_] :=
     Flatten[(possibleNewEdgesJoined[h, edgeInH, #1]&) /@ currentLayouts,
          1]
-
+(*Iterates over all current layouts adding a new edge*)
 
 pathFindingComputation[h_] :=
     AbsoluteTiming[
