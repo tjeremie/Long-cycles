@@ -35,16 +35,17 @@ In other words, instead of encoding configurations as a list of orderings, we en
 close to the configuration graph itself. This will be easier to work with when extending configurations in
 the main iterative search (described in Lemma 3.4).
 
+For simplicity, for the empty configuration leftVerticesGrouped and rightVerticesGrouped will be a list
+containing, for each vertex in leftVertices and in rightVertices respectively, an empty list. In other
+words, the sequence H_0,H_1,\dots, described in the proof of Lemma 3.4, will be obtained by always keeping
+the same vertex set, and only adding edges.
+
 Configuration graphs are implemented as associations with many keys, containing all the information
 necessary to find good cycles, etc. (see makeConfigurationGraph below). For a configuration tau, left 
 vertices are those in C_1^tau and the right vertices are those in C_2^tau. 
 
 Note: Working with Mathematica edge objects is somewhat delicate. For example, a\[UndirectedEdge]b and b\[UndirectedEdge]a are not 
 considered to be same when checking for equality, say. We thus often use Sort to order the two vertices.
-
-
-
-
 *)
 
 
@@ -77,7 +78,7 @@ listAdd[list_,label_]:=Riffle[list,Subscript[label,#]&/@Range[Length[list]]]
 
 (* Given a list of vertices, and a formal variable label, we create a cycle, which is a list of edges, 
 which follows the cyclic order inherited from list, but adding a new distinct vertex at every 2nd position. *)
-makeCycle[list_,label_]:=UndirectedEdge@@@(Sort/@Subsequences[Join[listAdd[path,label],{path[[1]]}],{2}])
+makeCycle[list_,label_]:=UndirectedEdge@@@(Sort/@Subsequences[Join[listAdd[list,label],{list[[1]]}],{2}])
 
 
 (* Given a Mathematica graph h which is bipartite, and leftVertexOrder and rightVertexOrder which are
@@ -159,7 +160,8 @@ makeConfigurationGraph[configuration_, finishCycles_] :=
 		leftDangerousEdges = Complement[leftEdges, leftSafeEdges];
 		rightDangerousEdges = Complement[rightEdges, rightSafeEdges];
         
-        (* This is the list of all edges in the configuration graph that aren't cross edges.*)
+        (* This is the list of all edges in the configuration graph that aren't cross edges, i.e. all the
+        edges of the main cycles. *)
 		sideEdges = Join[leftEdges, rightEdges];
 		
 		(* Cross edges are converted to Mathematica edge format. *)
@@ -199,24 +201,39 @@ makeConfigurationGraph[configuration_, finishCycles_] :=
 *)
 
 
-coversAllEdges[g_, {path1_, path2_}] := 
+(* Given a graph configuration g and two paths, checks if all the edges of the main cycles are covered
+by the paths, which is one of the main conditions in Lemma 3.1. *)
+coversAllSideEdges[g_, path1_, path2_] := 
 	ContainsAll[Join[pathToEdges[path1], pathToEdges[path2]], g["sideEdges"]]
 
 
+(* The other condition in Lemma 3.1 is that this pair of paths intersects at least one cross edge. *)
+intersectsCrossEdges[g_, path1_, path2_] := 
+	IntersectingQ[Join[pathToEdges[path1],pathToEdges[path2]], g["crossEdges"]]
+
+
+(* Given a configuration graph, returns the list of all good paths for the left side, i.e. paths in the
+configuration graph between the first and last vertices on the main cycle C_1^tau which do not contain
+any dangerous edges on the right side. Given that the pair of paths we will later find must cover all
+side edges, but that good paths on the right side cannot contain left dangerous edges, we enforce here that
+the left side good paths contain all left dangerous edges. *)
 findPathsLeft[g_] :=
 	Select[
 		FindPath[
 			EdgeDelete[g["graph"], g["rightDangerousEdges"]], 
 			g["leftVertices"][[1]], 
 			g["leftVertices"][[-1]], 
-			{1, Infinity}, 
+			Infinity, 
 			All
 		], 
-		ContainsAll[pathToEdges[#1], g["leftDangerousEdges"]] && 
-		IntersectingQ[pathToEdges[#1], g["crossEdges"]] &
+		ContainsAll[pathToEdges[#1], g["leftDangerousEdges"]] &
      ]
 
 
+(* Similar function for good paths on the right side. However, to reduce computation time, we run this
+function after choosing good paths on the left side, adding some extra conditions (see comments below).
+This function also checks the requirement that the pair of paths must contain all side edges and at least
+one cross edge. *)
 rightPathExists[g_, leftPath_] :=
 	AnyTrue[
 		FindPath[
@@ -224,167 +241,322 @@ rightPathExists[g_, leftPath_] :=
 				g["graph"], 
 				Union[
 					g["leftDangerousEdges"],
-					Intersection[pathToEdges[leftPath], g["sideEdges"]](*Somehow this works, the cycles never overlap on the sides*)
+					(* We add a very strong condition, that the two paths never intersect on side edges (
+					they can however intersect on cross edges). This reduces computation time, and appears
+					to not remove too many possibly interesting paths. *)
+					Intersection[pathToEdges[leftPath], g["sideEdges"]]
 				]
 			],
 			g["rightVertices"][[1]], 
 			g["rightVertices"][[-1]], 
-			{1, Infinity}, 
+			Infinity, 
 			All
         ], 
-        coversAllEdges[g,{leftPath, #1}] && 
-        ContainsAll[pathToEdges[#1], g["rightDangerousEdges"]] && 
-        IntersectingQ[pathToEdges[#1], g["crossEdges"]]&
+        (* Verifies that this pair of paths covers all side edges, and at least one cross edge. *)
+        coversAllSideEdges[g,leftPath, #1] && 
+        intersectsCrossEdges[g,leftPath,#1]&
     ]
 
 
+(* First generates all good left paths, then checks if for at least one of them there exists a good 
+right path such that together they cover all side edges and at least one cross edge. *)
 pathsExist[g_] := AnyTrue[findPathsLeft[g], rightPathExists[g, #1]&]
 
 
 (* ::Section:: *)
-(*Path finding algorithm*)
+(*Iterative process*)
 
 
-possibleNewEdgesJoined[h_, newEdge_, layout_] := 
-	Module[{newLeftVertex, newRightVertex, posLeft, posRight},
-		newLeftVertex = Subscript[l, {newEdge[[1]], Length[layout["crossEdges"]] + 1}]; 
-		newRightVertex = Subscript[r, {newEdge[[2]], Length[layout["crossEdges"]] + 1}]; 
-		posLeft = FirstPosition[h["leftVertices"], newEdge[[1]]][[1]]; 
-		posRight = FirstPosition[h["rightVertices"], newEdge[[2]]][[1]]; 
+(*
+	In this section, we implement the algorithm described in paths (1)-(2)-(3) of the proof of Lemma 3.4.
+*)
 
+
+(* For an ordered bipartite graph h, an edge e of h, and a configuration of a subgraph h' of h not containing
+this new edge, results the list of configurations of on h'+e that can be obtained by adding a new cross edge (and
+its end vertices on each side)*)
+extendConfiguration[h_, edgeInH_, configuration_] := 
+	Module[
+		{newLeftVertex, newRightVertex, posLeft, posRight},
+		
+		(* We choose names for the new vertices to be added to each side for this new edge. Here, 
+		they will be of the form l_{e,i} or r_{e,i}, where l,r is chosen depending on which side the 
+		vertex is added, e is the edge in h corresponding to the edge we are adding to the configuration
+		graph, and i is the iteration in the algorithm (here obtained by looking at how many cross edges
+		are already in the configuration graph). *)
+		newLeftVertex = Subscript[l, {edgeInH[[1]], Length[configuration["crossEdges"]] + 1}]; 
+		newRightVertex = Subscript[r, {edgeInH[[2]], Length[configuration["crossEdges"]] + 1}];
+		
+		(* The indexes in the vertex lists of h of both endpoints of the new edge. This will tell us
+		the indexes of the bags in the configuration where we must add the new vertices for the new cross
+		edge. *)
+		posLeft = FirstPosition[h["leftVertices"], edgeInH[[1]]][[1]]; 
+		posRight = FirstPosition[h["rightVertices"], edgeInH[[2]]][[1]]; 
+		
 		Flatten[
 			Table[
+				(* We define the new configuration if we add the new vertex on the left at position i
+				inside the appropriate bag of leftVerticesGrouped (the bag at index posLeft), and
+				analogously on the right with j. We also append the new cross edge to crossEdges.*)
 				Association[
-					"leftVerticesGrouped" -> Insert[layout["leftVerticesGrouped"], 
+					"leftVerticesGrouped" -> Insert[configuration["leftVerticesGrouped"], 
 						newLeftVertex, {posLeft, i}], 
-					"rightVerticesGrouped" -> Insert[layout["rightVerticesGrouped"], 
+					"rightVerticesGrouped" -> Insert[configuration["rightVerticesGrouped"], 
 						newRightVertex, {posRight, j}],
-					"crossEdges" -> Append[layout["crossEdges"], {newLeftVertex, newRightVertex}]]
-				,{i, 1, Length[layout["leftVerticesGrouped"][[posLeft]]] + 1}
-			,{j, 1, Length[layout["rightVerticesGrouped"][[posRight]]] + 1}
+					"crossEdges" -> Append[configuration["crossEdges"], {newLeftVertex, newRightVertex}]]
+				
+				(* We iterate over all possible pairs i,j: if there are currently x vertices in the bag,
+				we can insert the new vertex at x+1 possible positions.*)
+				,{i, 1, Length[configuration["leftVerticesGrouped"][[posLeft]]] + 1}
+				,{j, 1, Length[configuration["rightVerticesGrouped"][[posRight]]] + 1}
 			]
+		(* Given that the table has two indexes, we must flatten the list by one dimension, as we simply
+		want a list of configurations, and not a matrix (or list of lists). *)
 		, 1]
 	]
 
 
-iterate[h_, edgeInH_, currentLayouts_] :=
-    Flatten[(possibleNewEdgesJoined[h, edgeInH, #1]&) /@ currentLayouts,
-         1]
+(* This function applies the previous function to a list of configurations, and flattens the result to obtain
+a single list. *)
+nextConfigurations[h_, edgeInH_, currentConfigurations_] :=
+    Flatten[(extendConfiguration[h, edgeInH, #1]&) /@ currentConfigurations, 1]
 
 
 pathFindingComputation[h_] :=
-    AbsoluteTiming[
-        Monitor[
-            Module[{currentLayouts},
-                Print[h];
-                currentLayouts = {Association["leftVerticesGrouped" ->
-                     ConstantArray[{}, Length[h["leftVertices"]]], "rightVerticesGrouped"
-                     -> ConstantArray[{}, Length[h["rightVertices"]]], "crossEdges" -> {}
-                    ]};
-                Do[
-                    Print["Iteration : ", it];
-                    currentLayouts = iterate[h, h["edges"][[it]], currentLayouts
-                        ];
-                    Print["Number of layouts before filtering for paths : ",
-                         Length[currentLayouts]];
-                    currentLayouts = Reap[
-                            Do[
-                                If[!pathsExist[makeGraph[currentLayouts[[j]],False]],
-                                    Sow[currentLayouts[[j]]]
-                                ];
-                                ,
-                                {j, Length[currentLayouts]}
-                            ]
-                        ][[2]];
-                    If[Length[currentLayouts]>0,currentLayouts=currentLayouts[[1]]];
-                    
-                    Print["Number of layouts after filtering for paths : ",
-                         Length[currentLayouts]];
-                ,{it, 1, Length[h["edges"]]}];
-           currentLayouts
-           ]
-        , {it, j}]
-    ]
+	Module[
+		{currentConfigurations},
+		
+		(* We initialize the list of configurations with only the empty configuration (the number of bags
+		depends on the number of vertices of h, but they are all empty). This is part (2) of the 
+		algorithm as described in the paper. *)
+		currentConfigurations = {
+			<|
+				"leftVerticesGrouped" -> ConstantArray[{}, Length[h["leftVertices"]]],
+				"rightVerticesGrouped" -> ConstantArray[{}, Length[h["rightVertices"]]],
+				"crossEdges" -> {}
+			|>
+		};
+		
+		(* We repeatedly iterate through the edges of h, extend the configurations, and remove the ones
+		for which Lemma 3.1 guarantees the presence of a good long cycle in the configuration graph.
+		This is part (3) of the algorithm described in the paper. *)
+		Do[
+			Print["Iteration : ", it];
+			
+			(* Given the configurations from the previous step, we find all new configurations obtained by 
+			extension corresponding to adding the next edge of h. *)
+			currentConfigurations = nextConfigurations[h, h["edges"][[it]], currentConfigurations];
+			
+			Print["Number of configurations extending configurations from previous iteration: ", Length[currentConfigurations]];
+			
+			(* We then filter the configurations, which is done by first looking at the configuration
+			graph corresponding to the configuration and applying the path-finding method defined above.
+			We only keep configurations for which we cannot guarantee the presence of good long cycles. *)
+			currentConfigurations = 
+				Select[currentConfigurations,!pathsExist[makeConfigurationGraph[#,False]]&];
+				
+			Print["Number of configurations after filtering using criterion of Lemma 3.1: ", Length[currentConfigurations]]
+			
+			,{it, 1, Length[h["edges"]]}
+		];
+		
+		(* We return all surviving configurations. These will be tested using the linear program. *)
+		currentConfigurations
+	]
 
 
 (* ::Section:: *)
 (*Linear program version*)
 
 
+(*
+	In this section, we implement the linear program described in Section 3 of the paper.
+*)
+
+
+(* Given a Mathematica undirected edge, sorts it (to guarantee uniformity, as we wish to create 
+exactly one variable per edge.) *)
 sortEdge[a_\[UndirectedEdge]b_]:=Sort[{a,b}][[1]]\[UndirectedEdge]Sort[{a,b}][[2]]
 
 
-toVar[edge_]:=Subscript[var,sortEdge[edge]]
+(* Given an edge, creates the formal variable (w_e) for use in the linear program. *)
+toVar[edge_]:=Subscript[w,sortEdge[edge]]
 
 
-cycleSumLeq[cycle_,longestCycle_]:=Total[toVar/@cycle]<=Total[toVar/@longestCycle]
+(* For a (good) cycle and a main cycle (either C_1^tau or C_2^tau), creates the inequality 
+representing that the main cycle must have a larger weight. *)
+cycleSumLeq[cycle_,mainCycle_]:=Total[toVar/@cycle]<=Total[toVar/@mainCycle]
 
 
-equalCycles[longestCycle1_,longestCycle2_]:=Total[toVar/@longestCycle1]==Total[toVar/@longestCycle2]
+(* For both main cycles (C_1^tau and C_2^tau), equality representing that their weight 
+must be the same. *)
+equalCycles[mainCycle1_,mainCycle2_]:=Total[toVar/@mainCycle1]==Total[toVar/@mainCycle2]
 
 
-singleLinearProgramCheck[configuration_]:=Module[{configurationGraph,allEdges,cycleList,leftMainCycle,rightMainCycle,solution},
-	configurationGraph=makeGraph[configuration, True];
-	allEdges=sortEdge/@Join[configurationGraph["sideEdges"],configurationGraph["crossEdges"]];
-	cycleList=Map[sortEdge,Join[FindCycle[EdgeDelete[configurationGraph["graph"],configurationGraph["leftDangerousEdges"]],Infinity,All],FindCycle[EdgeDelete[configurationGraph["graph"],configurationGraph["rightDangerousEdges"]],Infinity,All]],{2}];
-	leftMainCycle=sortEdge/@configurationGraph["leftEdges"];
-	rightMainCycle=sortEdge/@configurationGraph["rightEdges"];
-	solution=LinearOptimization[
+(* Given a configuration, creates the linear program and returns True if it is unfeasible, i.e. indicating
+that no weight assignment is such that there is no good long cycle. *)
+linearProgramCheck[configuration_]:=
+	Module[
+		{configurationGraph,allEdges,goodCycles1,goodCycles2,goodCycles,leftMainCycle,rightMainCycle,solution},
+		
+		(* We first create the configuration graph from the configuration. Here, we use finishCycles=True,
+		since we want all cycles to be present. *)
+		configurationGraph=makeConfigurationGraph[configuration, True];
+		
+		(* We extract the list of edges in the configuration graph. *)
+		allEdges=sortEdge/@Join[configurationGraph["sideEdges"],configurationGraph["crossEdges"]];
+		
+		(* The list of cycles not including any dangerous edges on the left side. *)
+		goodCycles1=FindCycle[
+			(* We apply the FindCycle function on the subgraph obtained by removing the dangerous edges. *)
+			EdgeDelete[configurationGraph["graph"],configurationGraph["leftDangerousEdges"]],
+			
+			(* Option to select all cycles of any length. *)
+			Infinity,
+			
+			(* Option to find All cycles. *)
+			All
+		];
+		
+		(* Similarly, the list of cycles not including any dangerous edges on the right side. *)
+		goodCycles2=FindCycle[
+			EdgeDelete[configurationGraph["graph"],configurationGraph["rightDangerousEdges"]],
+			Infinity,
+			All
+		];
+		
+		(* Joining these, we obtain the list of all good cycles in the configuration graph. *)
+		goodCycles=Map[sortEdge,Join[goodCycles1,goodCycles2],{2}];
+		
+		(* We also obtain the two main cycles. *)
+		leftMainCycle=sortEdge/@configurationGraph["leftEdges"];
+		rightMainCycle=sortEdge/@configurationGraph["rightEdges"];
+		
+		(* Creating and solving the linear program*)
+		solution=LinearOptimization[
+			(* As mentioned in the paper, we are only concerned with feasability, so we choose 1 
+			as the objective function. *)
 			1,
+			
+			(* The list of equalities and inequalities. *)
 			{
-				cycleSumLeq[#,leftMainCycle]&/@cycleList,
-				cycleSumLeq[#,rightMainCycle]&/@cycleList,
+				(* As per the definition of the linear program in the paper, the main cycles must have 
+				the same weight. *)
 				equalCycles[leftMainCycle,rightMainCycle],
-				#>=1&/@(toVar/@allEdges)
+				
+				(* Also, for every good cycle its total weight is at most the total weight
+				for of one of the main cycles. *)
+				cycleSumLeq[#,leftMainCycle]&/@goodCycles,
+				
+				(* As described in the paper, all cross edges must have a weight of at least 1. *)
+				#>=1&/@(toVar/@configurationGraph["crossEdges"]),
+				
+				(* Otherwise, the edges must have a weight of at least 0. *)
+				#>=0&/@(toVar/@configurationGraph["sideEdges"])
 			},
-			toVar/@allEdges
-		,"PrimalMinimumValue"]==Infinity
+			
+			(* The list of variables, there is one for each edge of the configuration graph. *)
+			toVar/@allEdges,
+			
+			(* We return the minimum value of the objective function. If this is Infinity, this means
+			the linear program is not feasible. *)
+			"PrimalMinimumValue"
+		];
+		
+		solution==Infinity
 ]
 
 
-linearProgramCheckAll[configurationList_]:=Quiet[AllTrue[configurationList,singleLinearProgramCheck]]
+(* For a list of configuration, returns True if for every configuration the linear program indicates
+that there always exists a good long cycle. The Quiet function removes the warning stating that 
+the program is not feasible. *)
+linearProgramCheckAll[configurationList_]:=Quiet[AllTrue[configurationList,linearProgramCheck]]
 
 
 (* ::Chapter:: *)
 (*Computation*)
 
 
+(*
+	In this chapter, we run the computation (first the path finding method, and the linear program) 
+	for both K_{3,3} and Q_3^+.
+*)
+
+
 (* ::Section:: *)
 (*K_{3,3}*)
 
 
-k33=<|"leftVertices"->{a1,a2,a3},"rightVertices"->{b1,b2,b3},"edges"->{{a1,b1},{a1,b2},{a1,b3},{a2,b1},{a2,b2},{a2,b3},{a3,b1},{a3,b2},{a3,b3}}|>;
+(* Definition of K_{3,3} as an ordered bipartite graph .*)
+k33=<|
+	"leftVertices"->{a1,a2,a3},
+	"rightVertices"->{b1,b2,b3},
+	"edges"->{{a1,b1},{a1,b2},{a1,b3},{a2,b1},{a2,b2},{a2,b3},{a3,b1},{a3,b2},{a3,b3}}
+|>;
 
 
-toGraph[k33]
+(* We display the graph. *)
+orderedBipartiteToGraph[k33]
 
 
-isomorphismClasses[k33]
+(* We confirm there is, up to equivalence, only one ordered bipartite graph on K_{3,3}. *)
+Length[distinctOrderedBipartiteOnH[k33]]
 
 
-{timek33,pathFindingResultsk33}=pathFindingComputation[k33]
+(* Path finding method (Lemma 3.1) applied to K_{3,3}. *)
+(pathFindingResultsk33=pathFindingComputation[k33];)//AbsoluteTiming
 
 
-linearProgramCheckAll[pathFindingResultsk33]
+(* For the 72 configurations for which Lemma 3.1 cannot guarantee there will always be a good
+long cycles, we use the linear program. *)
+linearProgramCheckAll[pathFindingResultsk33]//AbsoluteTiming
 
 
 (* ::Section:: *)
 (*Hypercube+edge*)
 
 
-hypercubePlusEdge=<|"leftVertices"->{a1,a2,a3,a4},"rightVertices"->{b1,b2,b3,b4},"edges"->{{a1,b2},{a1,b3},{a2,b2},{a2,b3},{a3,b2},{a3,b3},{a1,b4},{a2,b4},{a4,b4},{a2,b1},{a3,b1},{a4,b1},{a4,b2}}|>
+(* Definition of Q_3^+ as an ordered bipartite graph. *)
+hypercubePlusEdge=<|
+	"leftVertices"->{a1,a2,a3,a4},
+	"rightVertices"->{b1,b2,b3,b4},
+	"edges"->{{a1,b2},{a1,b3},{a2,b2},{a2,b3},{a3,b2},{a3,b3},
+			 {a1,b4},{a2,b4},{a4,b4},{a2,b1},{a3,b1},{a4,b1},{a4,b2}}
+|>;
 
 
-{hypercubePlusEdge1,hypercubePlusEdge2}=isomorphismClasses[hypercubePlusEdge]
+(* There are exactly two ordered bipartite graphs on Q_3^+. *)
+{hypercubePlusEdge1,hypercubePlusEdge2}=distinctOrderedBipartiteOnH[hypercubePlusEdge]
 
 
-{timehypercubePlusEdge1,pathFindingResultshypercubePlusEdge1}=pathFindingComputation[hypercubePlusEdge1]
+(* ::Subsection:: *)
+(*First ordered bipartite graph on Q_3^+*)
 
 
-linearProgramCheckAll[pathFindingResultshypercubePlusEdge1]
+(* We display the graph. *)
+orderedBipartiteToGraph[hypercubePlusEdge1]
 
 
-{timehypercubePlusEdge2,pathFindingResultshypercubePlusEdge2}=pathFindingComputation[hypercubePlusEdge2]
+(* Path finding method (Lemma 3.1) applied to K_{3,3}. *)
+(pathFindingResultsHypercubePlusEdge1=pathFindingComputation[hypercubePlusEdge1];)//AbsoluteTiming
 
 
-linearProgramCheckAll[pathFindingResultshypercubePlusEdge2]
+(* For the 12 configuration for which Lemma 3.1 cannot guarantee there will always be a good
+long cycles, we use the linear program. *)
+linearProgramCheckAll[pathFindingResultsHypercubePlusEdge1]//AbsoluteTiming
+
+
+(* ::Subsection:: *)
+(*Second ordered bipartite graph on Q_3^+*)
+
+
+(* We display the graph. *)
+orderedBipartiteToGraph[hypercubePlusEdge2]
+
+
+(* Path finding method (Lemma 3.1) applied to K_{3,3}. *)
+(pathFindingResultsHypercubePlusEdge2=pathFindingComputation[hypercubePlusEdge2];)//AbsoluteTiming
+
+
+(* There are no configurations that need to be checked with the linear program in this case. *)
+Length[pathFindingResultsHypercubePlusEdge2]
