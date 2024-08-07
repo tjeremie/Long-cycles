@@ -1,7 +1,7 @@
 (* ::Package:: *)
 
 (* ::Title:: *)
-(*Longer cycles and larger intersections - Code complement*)
+(*Longest cycles in vertex-transitive and highly connected graphs - Code complement*)
 
 
 (* ::Subtitle:: *)
